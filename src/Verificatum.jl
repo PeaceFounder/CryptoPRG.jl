@@ -1,11 +1,11 @@
 module Verificatum
 
 import ..CryptoPRG: bitlength, HashSpec
-#using Nettle
 import Random
 using Random: AbstractRNG
 
-# The PRG and RO is implemented according to Verificatum verifier specification. It would also be valuable to implement Fips 1.4 standart in the future. 
+# The PRG and RO is implemented according to Verificatum verifier specification. 
+# It would also be valuable to implement Fips 1.4 standart in the future. 
 
 struct PRG <: AbstractRNG
     h::HashSpec
@@ -71,7 +71,6 @@ function interpret(::Type{Vector{T}}, 𝐫::Vector{UInt8}, N::Int) where T <: In
 end
 
 
-
 function Base.rand(prg::PRG, ::Type{T}, N::Int; n = bitlength(T)) where T <: Integer
 
     M = div(n, 8, RoundUp) # bytes for each number
@@ -104,6 +103,7 @@ struct ROPRG
     prghash::HashSpec
 end
 
+ROPRG(ρ::Vector{UInt8}, hasher::HashSpec) = ROPRG(ρ, hasher, hasher)
 
 function (roprg::ROPRG)(x::Vector{UInt8})
 

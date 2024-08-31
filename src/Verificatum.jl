@@ -2,7 +2,7 @@ module Verificatum
 
 import ..CryptoPRG: bitlength, HashSpec
 import Random
-using Random: AbstractRNG
+using Random: AbstractRNG, SamplerBigInt
 
 # The PRG and RO is implemented according to Verificatum verifier specification. 
 # It would also be valuable to implement Fips 1.4 standart in the future. 
@@ -85,8 +85,10 @@ end
 
 @deprecate Base.rand(prg::PRG, n::Int, N::Int) Base.rand(prg, BigInt, N; n) false
 Base.rand(prg::PRG, ::Type{T}; n = bitlength(T)) where T <: Integer = rand(prg, T, 1; n)[1]
+Base.rand(rng::PRG, sp::UnitRange{BigInt}) = rand(rng, sp, 1)[1]
 
-function Random.rand!(rng::PRG, a::AbstractArray{T}, sp) where T <: Integer
+
+function Random.rand!(rng::PRG, a::AbstractArray{T}, sp::UnitRange) where T <: Integer
 
     values = rand(rng, BigInt, length(a); n = bitlength(maximum(sp))) 
 

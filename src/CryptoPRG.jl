@@ -37,6 +37,10 @@ end
 
 function bitlength(p::BigInt) 
 
+    if p == 0
+        return 1
+    end
+
     # A dublicate is in CryptoGroups
     # It is an implementation detail within the context of package
     function _int2bytes(x::Integer)
@@ -51,6 +55,7 @@ function bitlength(p::BigInt)
     bytes = _int2bytes(p)
     bits = bitstring(bytes[end])
     start = findfirst(x -> x == '1', bits)
+
     N = length(bytes) * 8  - (start - 1)
 
     return N

@@ -15,48 +15,97 @@ end
 PRG(hasher::String; s = Vector{UInt8}("SEED")) = PRG(HashSpec(hasher), s)
 bitlength(prg::PRG) = bitlength(prg.h)
 
-(prg::PRG)(i::UInt32) = prg.h([prg.s..., reverse(reinterpret(UInt8, UInt32[i]))...])
-
+function (prg::PRG)(i::UInt32)
+    bytes = Vector{UInt8}(undef, length(prg.s) + 4)
+    copyto!(bytes, prg.s)  # @inbounds
+    offset = length(prg.s)
+    for j in 1:4 # @inbounds
+        bytes[offset + j] = (i >> (32 - 8j)) % UInt8
+    end
+    prg.h(bytes)
+end
 
 function Base.getindex(prg::PRG, range)
     (; start, stop) = range
     
-    a = bitlength(prg.h) ÷ 8 # outlength
-
-    K = div(stop, a, RoundUp) - 1
-
-    r = UInt8[]
+    a = bitlength(prg.h) ÷ 8  # outlength
+    start_block = div(start - 1, a)  # Remove RoundUp
+    end_block = div(stop - 1, a)     # Remove -1 and RoundUp
     
-    for i in UInt32(0):UInt32(K)
+    # Calculate exact required capacity
+    total_blocks = end_block - start_block + 1
+    r = Vector{UInt8}(undef, total_blocks * a)
+    
+    # Fill only the needed blocks
+    for (idx, i) in enumerate(UInt32(start_block):UInt32(end_block))
         ri = prg(i)
-        append!(r, ri)
+        offset = (idx - 1) * a + 1
+        r[offset:offset + length(ri) - 1] = ri
     end
     
-    return r[range]
+    # Calculate the exact indices needed from the generated blocks
+    start_offset = (start - 1) % a + 1
+    end_offset = (stop - 1) % a + 1 + (end_block - start_block) * a
+    
+    return r[start_offset:end_offset]
 end
-
 
 struct RO
     h::HashSpec
     n_out::Int
 end
 
-zerofirst(x, n) = (x << n) >> n # Puts first n bits of a number x to zero. 
+# zerofirst(x, n) = (x << n) >> n # Puts first n bits of a number x to zero. 
 
-function (ro::RO)(d::Vector{UInt8})
+"""
+    (ro::RO)(d::AbstractVector{UInt8})
+
+Apply a Random Oracle to the input data with specified output length.
+
+# Arguments
+- `ro::RO`: Random Oracle instance containing hash function and output length
+- `d::AbstractVector{UInt8}`: Input data
+
+# Returns
+- `Vector{UInt8}`: Output bytes of specified length with appropriate bit padding
+
+# Throws
+- `ArgumentError`: If input parameters are invalid
+"""
+function (ro::RO)(d::AbstractVector{UInt8})
+    # Destructure and validate parameters
     (; h, n_out) = ro
-
-    nb = reinterpret(UInt8, UInt32[n_out])
-    s = h([reverse(nb)...,d...]) # Numbers on Java are represented in reverse
-    prg = PRG(h, s)
-
-    a = prg[1:div(n_out, 8, RoundUp)]
     
-    if mod(n_out, 8) != 0 
-        a[1] = zerofirst(a[1], 8 - mod(n_out, 8))
+    # Calculate required output bytes
+    n_bytes = cld(n_out, 8)  # Ceiling division for required bytes
+    
+    # Convert output length to bytes (using little-endian for Java compatibility)
+    len_bytes = reinterpret(UInt8, [UInt32(n_out)])
+    
+    # Pre-allocate and prepare input buffer
+    total_length = length(len_bytes) + length(d)
+    input_buffer = Vector{UInt8}(undef, total_length)
+    
+    # Copy length bytes in reverse (little-endian) and data
+    copyto!(input_buffer, 1, reverse(len_bytes), 1, length(len_bytes))
+    copyto!(input_buffer, length(len_bytes) + 1, d, 1, length(d))
+    
+    # Generate PRG seed
+    seed = h(input_buffer)
+    prg = PRG(h, seed)
+    
+    # Generate output bytes
+    output = prg[1:n_bytes]
+    
+    # Apply bit masking if necessary
+    remaining_bits = mod(n_out, 8)
+    if remaining_bits != 0
+        # Create a mask for the remaining bits
+        mask = UInt8((1 << remaining_bits) - 1)
+        output[1] = output[1] & mask
     end
-
-    return a
+    
+    return output
 end
 
 _tobig(x) = parse(BigInt, bytes2hex(reverse(x)), base=16)
@@ -99,6 +148,33 @@ function Random.rand!(rng::PRG, a::AbstractArray{T}, sp::UnitRange) where T <: I
 end
 
 
+# Define the iterator struct
+struct PRGIterator{T}
+    prg::PRG
+    n::Int
+    M::Int  # bytes per number
+end
+
+PRGIterator{T}(prg, n) where T <: Integer = PRGIterator{T}(prg, n, div(n, 8, RoundUp))
+
+# Iterator interface
+Base.IteratorSize(::Type{<:PRGIterator}) = Base.IsInfinite()
+Base.eltype(::PRGIterator{T}) where T = T
+
+function Base.iterate(iter::PRGIterator{T}, state=1) where T
+    # Calculate block indices for this number
+    start_idx = (state - 1) * iter.M + 1
+    end_idx = start_idx + iter.M - 1
+    
+    # Get bytes for this number
+    bytes = iter.prg[start_idx:end_idx]
+    
+    # Convert to number
+    number = interpret(Vector{BigInt}, bytes, 1)[1]
+    
+    return (number, state + 1)
+end
+
 struct ROPRG
     ρ::Vector{UInt8}
     rohash::HashSpec
@@ -107,17 +183,42 @@ end
 
 ROPRG(ρ::Vector{UInt8}, hasher::HashSpec) = ROPRG(ρ, hasher, hasher)
 
-function (roprg::ROPRG)(x::Vector{UInt8})
 
-    (; ρ, rohash, prghash) = roprg
+"""
+    (roprg::ROPRG)(x::AbstractVector{UInt8})
 
-    ns = bitlength(prghash) # outlen
+Apply the Random Oracle Pseudorandom Generator to input bytes.
+
+# Arguments
+- `roprg::ROPRG`: The ROPRG instance containing ρ, rohash, and prghash parameters
+- `x::AbstractVector{UInt8}`: Input byte vector
+
+# Returns
+- `PRG`: A Pseudorandom Generator initialized with the processed input
+
+# Throws
+- `ArgumentError`: If input validation fails
+"""
+function (roprg::ROPRG)(x::AbstractVector{UInt8})
+    # Destructure parameters
+    ρ, rohash, prghash = roprg.ρ, roprg.rohash, roprg.prghash
+    
+    # Calculate output length
+    ns = bitlength(prghash)
     ro = RO(rohash, ns)
-
-    d = UInt8[ρ..., x...]   
-
+    
+    # Pre-allocate buffer for concatenated input
+    total_length = length(ρ) + length(x)
+    d = Vector{UInt8}(undef, total_length)
+    
+    # Efficiently copy data
+    copyto!(d, 1, ρ, 1, length(ρ))
+    copyto!(d, length(ρ) + 1, x, 1, length(x))
+    
+    # Generate seed and create PRG
     s = ro(d)
     prg = PRG(prghash, s)
+
     return prg
 end
 

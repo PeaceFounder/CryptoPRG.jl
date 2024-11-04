@@ -25,42 +25,7 @@ function bitlength(h::HashSpec)
 end
 
 bitlength(::Type{T}) where T <: Integer = sizeof(T) * 8
-
-function bitlength(p::Integer) # For cross checking
-
-    bits = bitstring(p)
-    start = findfirst(x -> x == '1', bits)
-    N = length(bits) - start + 1
-
-    return N
-end
-
-function bitlength(p::BigInt) 
-
-    if p == 0
-        return 1
-    end
-
-    # A dublicate is in CryptoGroups
-    # It is an implementation detail within the context of package
-    function _int2bytes(x::Integer)
-        hex = string(x, base=16)
-        if mod(length(hex), 2) != 0
-            hex = string("0", hex)
-        end
-        
-        return reverse(hex2bytes(hex))
-    end
-
-    bytes = _int2bytes(p)
-    bits = bitstring(bytes[end])
-    start = findfirst(x -> x == '1', bits)
-
-    N = length(bytes) * 8  - (start - 1)
-
-    return N
-end
-
+bitlength(p::Integer) = ndigits(p, base=2)
 
 include("Verificatum.jl")
 include("FIPS.jl")
